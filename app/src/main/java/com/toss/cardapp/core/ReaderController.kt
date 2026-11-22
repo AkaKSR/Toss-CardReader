@@ -73,6 +73,11 @@ class ReaderController(context: Context, private val listener: Listener) : PayHa
             if (!running || !hw.connected || !armed.compareAndSet(false, true)) return@postDelayed
             val id = session.incrementAndGet()
             worker.execute {
+                if (SlotGate.mustWaitForRemoval(hw.cardExistStatus(PayHardware.CARD_IC) == CARD_PRESENT)) {
+                    armed.set(false)
+                    waitForRemoval()
+                    return@execute
+                }
                 try {
                     hw.checkCard(PayHardware.CARD_IC or PayHardware.CARD_MAGNETIC, CHECK_TIMEOUT_SEC, Session(id))
                     post { listener.onStatus(ReaderStatus.WAITING) }
@@ -118,6 +123,7 @@ class ReaderController(context: Context, private val listener: Listener) : PayHa
                 EmvResult(note = "EMV read failed: ${e.javaClass.simpleName}")
             }
             hw.cardOff(PayHardware.CARD_IC)
+            SlotGate.markRead()
             deliver(
                 CardRead(
                     time = System.currentTimeMillis(), kind = CardKind.IC, atr = atr,
