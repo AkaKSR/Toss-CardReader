@@ -5,9 +5,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// Release signing comes from keystore.properties (not committed); see README.
+// Release signing comes from keystore-cardapp.properties (not committed): the app's own key since 1.0.0, so
+// updates install over existing data. The reader service and samples use keystore.properties instead.
 val keystoreProps = Properties().apply {
-    val f = rootProject.file("keystore.properties")
+    val f = rootProject.file("keystore-cardapp.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
@@ -19,8 +20,8 @@ android {
         applicationId = "com.toss.cardapp"
         minSdk = 26
         targetSdk = 33
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.3.0"
     }
 
     signingConfigs {
@@ -55,5 +56,6 @@ android {
 }
 
 dependencies {
+    implementation(project(":reader"))
     testImplementation("junit:junit:4.13.2")
 }

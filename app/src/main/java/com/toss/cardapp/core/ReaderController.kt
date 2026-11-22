@@ -5,13 +5,16 @@ import android.os.Handler
 import android.os.Looper
 import com.toss.cardapp.card.CardKind
 import com.toss.cardapp.card.CardRead
+import com.toss.cardapp.card.EmvField
 import com.toss.cardapp.card.TrackParser
-import com.toss.cardapp.emv.EmvReader
-import com.toss.cardapp.emv.EmvResult
-import com.toss.cardapp.hw.CardEvents
-import com.toss.cardapp.hw.PayHardware
 import com.toss.cardapp.store.AppStore
 import com.toss.cardapp.store.LogEntry
+import com.toss.cardreader.CardReaderApi
+import com.toss.cardreader.CardReaderError
+import com.toss.cardreader.CardReaderException
+import com.toss.cardreader.CardTypes
+import com.toss.cardreader.IcCardData
+import com.toss.cardreader.ServiceStatus
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -19,10 +22,10 @@ import java.util.concurrent.atomic.AtomicInteger
 enum class ReaderStatus { CONNECTING, WAITING, READING, REMOVE_CARD, ERROR, SERVICE_MISSING }
 
 /**
- * Card-reading loop shared by the normal and kiosk screens: arm checkCard(IC | MSR), read the card,
+ * Card-reading loop shared by the normal and kiosk screens: wait for IC | MSR through [Readers], read the card,
  * write the encrypted log entry, decide member/rule, then re-arm. Card data never goes to logcat.
  */
-class ReaderController(context: Context, private val listener: Listener) : PayHardware.ConnectionListener {
+class ReaderController(context: Context, private val listener: Listener) : CardReaderApi.ConnectionListener {
 
     interface Listener {
         fun onStatus(status: ReaderStatus, detail: String? = null)
@@ -30,7 +33,7 @@ class ReaderController(context: Context, private val listener: Listener) : PayHa
     }
 
     private val app = context.applicationContext
-    private val hw = PayHardware(app)
+    private val reader = Readers.open(app)
     private val store = AppStore.get(app)
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -41,9 +44,8 @@ class ReaderController(context: Context, private val listener: Listener) : PayHa
     fun start() {
         running = true
         active = this
-        hw.listener = this
         listener.onStatus(ReaderStatus.CONNECTING)
-        if (!hw.bind()) listener.onStatus(ReaderStatus.SERVICE_MISSING)
+        if (!reader.connect(this)) listener.onStatus(ReaderStatus.SERVICE_MISSING)
     }
 
     fun stop() {
@@ -51,8 +53,9 @@ class ReaderController(context: Context, private val listener: Listener) : PayHa
         if (active === this) active = null
         main.removeCallbacksAndMessages(null)
         session.incrementAndGet()
-        armed.set(false)
-        hw.unbind()
+        // A failed cancel means the reader is already gone; disconnecting covers the rest.
+        if (armed.getAndSet(false)) try { reader.cancel() } catch (_: CardReaderException) {}
+        reader.disconnect()
     }
 
     fun shutdown() {
@@ -65,40 +68,37 @@ class ReaderController(context: Context, private val listener: Listener) : PayHa
         if (running) post { listener.onStatus(ReaderStatus.CONNECTING) }
     }
 
-    // The service allows one detection at a time (INVOKING_REPEAT otherwise) and may report one event through
-    // both the plain and the Ex callback. Exactly one checkCard is outstanding per session id, and only the
-    // first callback of the current session is handled; anything else is dropped.
+    // The reader allows one card wait at a time (BUSY for another app, a replacement for ours). Exactly one wait is
+    // outstanding per session id, and only the first callback of the current session is handled.
     private fun arm(delayMs: Long = 0) {
         main.postDelayed({
-            if (!running || !hw.connected || !armed.compareAndSet(false, true)) return@postDelayed
+            if (!running || !reader.connected || !armed.compareAndSet(false, true)) return@postDelayed
             val id = session.incrementAndGet()
             worker.execute {
-                if (SlotGate.mustWaitForRemoval(hw.cardExistStatus(PayHardware.CARD_IC) == CARD_PRESENT)) {
-                    armed.set(false)
-                    waitForRemoval()
-                    return@execute
-                }
                 try {
-                    hw.checkCard(PayHardware.CARD_IC or PayHardware.CARD_MAGNETIC, CHECK_TIMEOUT_SEC, Session(id))
+                    if (SlotGate.mustWaitForRemoval(icPresent())) {
+                        armed.set(false)
+                        waitForRemoval()
+                        return@execute
+                    }
+                    reader.waitForCard(CardTypes.IC or CardTypes.MSR, CHECK_TIMEOUT_SEC, Session(id))
                     post { listener.onStatus(ReaderStatus.WAITING) }
-                } catch (e: Exception) {
+                } catch (e: CardReaderException) {
                     armed.set(false)
-                    post { listener.onStatus(ReaderStatus.ERROR, e.javaClass.simpleName) }
+                    if (e.code == CardReaderError.NOT_READY) post { listener.onStatus(ReaderStatus.CONNECTING) }
+                    else post { listener.onStatus(ReaderStatus.ERROR, CardReaderError.name(e.code)) }
                     arm(RETRY_MS)
                 }
             }
         }, delayMs)
     }
 
-    private inner class Session(private val id: Int) : CardEvents {
+    private inner class Session(private val id: Int) : CardReaderApi.CardListener {
         private fun claim(): Boolean = session.get() == id && armed.compareAndSet(true, false)
 
-        override fun onMagCard(track1: String?, track2: String?, track3: String?) {
-            if (claim()) handleMag(track1, track2, track3)
-        }
-
-        override fun onIcCard(atr: String?) {
-            if (claim()) handleIc(atr)
+        override fun onCardDetected(type: Int) {
+            if (!claim()) return
+            if (type == CardTypes.IC) handleIc() else handleMag()
         }
 
         override fun onError(code: Int, message: String?) {
@@ -106,29 +106,34 @@ class ReaderController(context: Context, private val listener: Listener) : PayHa
         }
     }
 
-    private fun handleMag(track1: String?, track2: String?, track3: String?) {
+    private fun handleMag() {
         worker.execute {
-            deliver(TrackParser.fromTracks(System.currentTimeMillis(), track1, track2, track3))
-            arm(REARM_MS)
+            try {
+                val t = reader.readMsr()
+                deliver(TrackParser.fromTracks(System.currentTimeMillis(), t.track1, t.track2, t.track3))
+                arm(REARM_MS)
+            } catch (e: CardReaderException) {
+                post { listener.onStatus(ReaderStatus.ERROR, CardReaderError.name(e.code)) }
+                arm(RETRY_MS)
+            }
         }
     }
 
-    private fun handleIc(atr: String?) {
+    private fun handleIc() {
         worker.execute {
             post { listener.onStatus(ReaderStatus.READING) }
-            hw.cancelCheckCard()
-            val emv = try {
-                EmvReader({ apdu -> hw.transmitApdu(PayHardware.CARD_IC, apdu) }).read()
-            } catch (e: Exception) {
-                EmvResult(note = "EMV read failed: ${e.javaClass.simpleName}")
+            val ic = try {
+                reader.readIc()
+            } catch (e: CardReaderException) {
+                IcCardData(atr = null, note = "IC read failed: ${CardReaderError.name(e.code)}")
             }
-            hw.cardOff(PayHardware.CARD_IC)
             SlotGate.markRead()
             deliver(
                 CardRead(
-                    time = System.currentTimeMillis(), kind = CardKind.IC, atr = atr,
-                    pan = emv.pan, expiry = emv.expiry, holder = emv.holder, serviceCode = emv.serviceCode,
-                    aid = emv.aid, appLabel = emv.appLabel, emvFields = emv.fields, note = emv.note,
+                    time = System.currentTimeMillis(), kind = CardKind.IC, atr = ic.atr,
+                    pan = ic.pan, expiry = ic.expiry, holder = ic.holder, serviceCode = ic.serviceCode,
+                    aid = ic.aid, appLabel = ic.appLabel, emvFields = ic.fields.map { EmvField(it.tag, it.name, it.value) },
+                    note = ic.note,
                 )
             )
             waitForRemoval()
@@ -136,17 +141,18 @@ class ReaderController(context: Context, private val listener: Listener) : PayHa
     }
 
     private fun handleError(code: Int) {
-        if (code == ERR_INVOKING_REPEAT) hw.cancelCheckCard()
-        if (code != ERR_TIMEOUT) post { listener.onStatus(ReaderStatus.ERROR, "code $code") }
-        arm(if (code == ERR_TIMEOUT) 0 else RETRY_MS)
+        if (code != CardReaderError.TIMEOUT) post { listener.onStatus(ReaderStatus.ERROR, CardReaderError.name(code)) }
+        arm(if (code == CardReaderError.TIMEOUT) 0 else RETRY_MS)
     }
 
-    // The service has no removal event, so poll the slot until it reports the card gone before re-arming;
-    // otherwise checkCard would fire again immediately for the same inserted card.
+    private fun icPresent(): Boolean = reader.status().icCard == ServiceStatus.CARD_PRESENT
+
+    // The reader has no removal event, so poll the slot until it reports the card gone before re-arming;
+    // otherwise the wait would fire again immediately for the same inserted card. A failed query ends the wait.
     private fun waitForRemoval() {
         post { listener.onStatus(ReaderStatus.REMOVE_CARD) }
         var waited = 0L
-        while (running && waited < REMOVAL_MAX_MS && hw.cardExistStatus(PayHardware.CARD_IC) == CARD_PRESENT) {
+        while (running && waited < REMOVAL_MAX_MS && runCatching { icPresent() }.getOrDefault(false)) {
             Thread.sleep(REMOVAL_POLL_MS)
             waited += REMOVAL_POLL_MS
         }
@@ -180,9 +186,6 @@ class ReaderController(context: Context, private val listener: Listener) : PayHa
         }
 
         const val CHECK_TIMEOUT_SEC = 60
-        const val CARD_PRESENT = 2
-        private const val ERR_TIMEOUT = -30005
-        private const val ERR_INVOKING_REPEAT = -20001
         private const val REARM_MS = 1500L
         private const val RETRY_MS = 3000L
         private const val REMOVAL_POLL_MS = 400L

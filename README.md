@@ -6,11 +6,11 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 앱 버전 | 1.2.0 |
+| 앱 버전 | 1.3.0 |
 | 패키지 | `com.toss.cardapp` |
 | 대상 환경 | 토스프론트 PLF02WH / LineageOS 13 |
 | 필수 구성 | 없음. Magisk 모듈 없이 리더에 직접 연결합니다. 순정 Sunmi 결제 하드웨어 서비스가 있으면 그 서비스를 사용합니다. |
-| 배포 파일 | GitHub Releases의 `toss-front-card-app-1.2.0.apk` |
+| 배포 파일 | `toss-front-card-app-1.3.0.apk` |
 
 ## 주요 기능
 
@@ -24,10 +24,11 @@
 
 ## 리더 연결 방식
 
-1.2.0부터 Magisk 모듈 `sunmi_payhw`가 필요하지 않습니다.
+1.2.0부터 Magisk 모듈 `sunmi_payhw`가 필요하지 않습니다. 1.3.0부터 아래 순서로 리더를 고릅니다.
 
-1. **결제 하드웨어 서비스가 있을 때**: 순정 `SunmiPayHardwareService`(`com.sunmi.pay.hardware_v3`)에 연결해 기존과 같이 사용합니다.
-2. **서비스가 없을 때**: 앱이 리더의 보안 프로세서(SP)와 UART `/dev/ttyS3`로 직접 통신합니다. 통신 규격은 [docs/sp_protocol.md](docs/sp_protocol.md)에 정리했습니다.
+1. **카드 리더 서비스가 있을 때**: 별도 드라이버 앱 `com.toss.cardreader.service`를 통해 읽습니다. 다른 앱도 같은 서비스로 리더를 쓸 수 있습니다. [docs/reader_service_api.md](docs/reader_service_api.md)
+2. **결제 하드웨어 서비스가 있을 때**: 순정 `SunmiPayHardwareService`(`com.sunmi.pay.hardware_v3`)에 연결해 기존과 같이 사용합니다.
+3. **둘 다 없을 때**: 앱이 리더의 보안 프로세서(SP)와 UART `/dev/ttyS3`로 직접 통신합니다. 통신 규격은 [docs/sp_protocol.md](docs/sp_protocol.md)에 정리했습니다.
 
 두 경로 모두 같은 화면과 기록 기능을 사용합니다. 직접 연결은 서비스가 없는 상태의 토스프론트 실기기에서 IC 삽입 감지, ATR·APDU 읽기, 마그네틱 읽기로 확인했습니다.
 
@@ -143,11 +144,13 @@ adb shell am start -n com.toss.cardapp/.ui.ReaderActivity
 JDK 21과 Android SDK의 Android 34 플랫폼·빌드 도구를 준비하고 SDK 위치를 설정합니다.
 
 ```sh
-./gradlew testDebugUnitTest assembleRelease
+./gradlew test assembleRelease
 ```
 
-- 결과 파일: `app/build/outputs/apk/release/app-release.apk`
-- 릴리스 서명은 Git에서 제외된 `keystore.properties`로 설정합니다. 해당 설정이 없으면 디버그 키를 사용합니다.
+- 모듈: `app`(카드 리더 앱), `service`(카드 리더 서비스), `client`(연결 라이브러리 AAR), `reader`(공용 드라이버), `testclient`(시험 앱).
+- 카드 리더 앱은 기존 키(`keystore-cardapp.properties`), 서비스와 시험 앱은 새 릴리스 키(`keystore.properties`)로 서명합니다. 둘 다 Git에서 제외합니다.
+
+- 결과 파일: `app/build/outputs/apk/release/app-release.apk` 등. 서명 설정 파일이 없으면 디버그 키를 사용합니다.
 - 디버그 빌드의 패키지는 `com.toss.cardapp.debug`이며, 합성 카드 주입 기능이 포함됩니다. 배포용 릴리스에는 이 기능이 없습니다.
 - 디버그와 릴리스를 동시에 대기시키면 같은 리더를 다투므로 한쪽만 실행하세요.
 

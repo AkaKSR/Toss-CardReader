@@ -19,3 +19,5 @@ keystore/
 *.pfx
 .env
 .env.*
+
+keystore-*.properties

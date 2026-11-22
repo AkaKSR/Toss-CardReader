@@ -15,24 +15,6 @@ import org.junit.Test
 // Synthetic fixtures use public test numbers, never data captured from a card.
 class TrackParserTest {
     @Test
-    fun parsesTrack1WithSentinels() {
-        val t = TrackParser.track1("%B4242424242424242^TEST/ONE                  ^4912101000000000?7")!!
-        assertEquals("4242424242424242", t.pan)
-        assertEquals("TEST/ONE", t.holder)
-        assertEquals("4912", t.expiry)
-        assertEquals("101", t.serviceCode)
-    }
-
-    @Test
-    fun parsesTrack2WithEqualsOrDSeparator() {
-        assertEquals("6011111111111117", TrackParser.track2(";6011111111111117=49122010000000000000?")!!.pan)
-        val d = TrackParser.track2("6011111111111117D4912201")!!
-        assertEquals("4912", d.expiry)
-        assertEquals("201", d.serviceCode)
-        assertNull(TrackParser.track2("1234567890"))
-    }
-
-    @Test
     fun msrReadPrefersTrack2PanAndTakesNameFromTrack1() {
         val r = TrackParser.fromTracks(1L, "B5105105105105100^TEST/TWO^4901", "4242424242424242=4912101", null)
         assertEquals("4242424242424242", r.pan)

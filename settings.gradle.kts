@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "toss-front-card-app"
-include(":app")
+include(":app", ":client", ":reader", ":service", ":testclient")

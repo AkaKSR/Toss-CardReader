@@ -18,28 +18,32 @@ import com.toss.cardapp.card.CardRead
 import com.toss.cardapp.card.TrackParser
 import com.toss.cardapp.core.AppForeground
 import com.toss.cardapp.core.ReaderController
-import com.toss.cardapp.hw.CardEvents
-import com.toss.cardapp.hw.PayHardware
+import com.toss.cardapp.core.Readers
 import com.toss.cardapp.store.AppStore
 import com.toss.cardapp.store.Settings
 import com.toss.cardapp.ui.ReaderActivity
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import com.toss.cardreader.CardReaderApi
+import com.toss.cardreader.CardReaderError
+import com.toss.cardreader.CardReaderException
+import com.toss.cardreader.CardTypes
+import com.toss.cardreader.ServiceStatus
 
 /**
  * Waits for an IC insert or MSR swipe while no app screen is showing and then opens the reader screen.
  *
- * The SP pushes nothing, so the watcher keeps exactly one checkCard(IC | MSR) outstanding through the stock service,
- * re-armed on its 60 s timeout. It lets go of the reader (cancelCheckCard) the moment an app screen resumes and
- * takes it back 1 s after the last one pauses, so the service never sees two detections (INVOKING_REPEAT).
+ * The SP pushes nothing, so the watcher keeps exactly one card wait (IC | MSR) outstanding through [Readers],
+ * re-armed on its 60 s timeout. It lets go of the reader (cancel) the moment an app screen resumes and takes it back
+ * 1 s after the last one pauses, so the reader never sees two waits from this app.
  *
  * Hand-over, so each card is read once: an MSR swipe cannot be repeated, so the detected tracks are passed to the
  * screen in-process (never through Intent extras). For IC the screen's own checkCard fires at once for the card
  * still in the slot and the screen does the single EMV read. Logcat gets card kind and timings only.
  */
-class CardWatchService : Service(), PayHardware.ConnectionListener {
-    private lateinit var hw: PayHardware
+class CardWatchService : Service(), CardReaderApi.ConnectionListener {
+    private lateinit var reader: CardReaderApi
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val lock = Any()
@@ -60,8 +64,8 @@ class CardWatchService : Service(), PayHardware.ConnectionListener {
         instance = this
         paused = AppForeground.visible
         AppForeground.addListener(onForeground)
-        hw = PayHardware(this).also { it.listener = this }
-        if (!hw.bind()) Log.w(TAG, "pay hardware service not found")
+        reader = Readers.open(this)
+        if (!reader.connect(this)) Log.w(TAG, "card reader not found")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -75,8 +79,8 @@ class CardWatchService : Service(), PayHardware.ConnectionListener {
         synchronized(lock) {
             paused = true
             session.incrementAndGet()
-            armed.set(false)
-            hw.unbind()
+            if (armed.getAndSet(false)) cancelWait()
+            reader.disconnect()
         }
         worker.shutdownNow()
         Log.i(TAG, "stopped")
@@ -96,7 +100,7 @@ class CardWatchService : Service(), PayHardware.ConnectionListener {
         synchronized(lock) {
             paused = true
             session.incrementAndGet()
-            if (armed.getAndSet(false)) hw.cancelCheckCard()
+            if (armed.getAndSet(false)) cancelWait()
         }
         Log.i(TAG, "paused: app screen visible")
     }
@@ -106,47 +110,66 @@ class CardWatchService : Service(), PayHardware.ConnectionListener {
     }
 
     private fun armNow() {
-        if (paused || !hw.connected || armed.get()) return
+        if (paused || !reader.connected || armed.get()) return
         recordUntakenHandover()
-        // Never arm over a card left in the slot (e.g. after leaving the reader screen with the card in),
-        // or the reader would reopen for the same card straight away.
-        if (hw.cardExistStatus(PayHardware.CARD_IC) == ReaderController.CARD_PRESENT) {
-            arm(SLOT_POLL_MS)
-            return
-        }
-        synchronized(lock) {
-            if (paused || !armed.compareAndSet(false, true)) return
-            val id = session.incrementAndGet()
-            try {
-                hw.checkCard(PayHardware.CARD_IC or PayHardware.CARD_MAGNETIC, ReaderController.CHECK_TIMEOUT_SEC, Session(id))
+        try {
+            // Never arm over a card left in the slot (e.g. after leaving the reader screen with the card in),
+            // or the reader would reopen for the same card straight away.
+            if (reader.status().icCard == ServiceStatus.CARD_PRESENT) {
+                arm(SLOT_POLL_MS)
+                return
+            }
+            synchronized(lock) {
+                if (paused || !armed.compareAndSet(false, true)) return
+                val id = session.incrementAndGet()
+                try {
+                    reader.waitForCard(CardTypes.IC or CardTypes.MSR, ReaderController.CHECK_TIMEOUT_SEC, Session(id))
+                } catch (e: CardReaderException) {
+                    armed.set(false)
+                    throw e
+                }
                 if (announce) Log.i(TAG, "armed: waiting for IC insert or MSR swipe")
                 announce = false
-            } catch (e: Exception) {
-                armed.set(false)
-                Log.w(TAG, "checkCard failed: ${e.javaClass.simpleName}")
-                arm(RETRY_MS)
             }
+        } catch (e: CardReaderException) {
+            Log.w(TAG, "card wait failed: ${CardReaderError.name(e.code)}")
+            arm(RETRY_MS)
         }
     }
 
-    private inner class Session(private val id: Int) : CardEvents {
+    private inner class Session(private val id: Int) : CardReaderApi.CardListener {
         private fun claim(): Boolean = session.get() == id && armed.compareAndSet(true, false)
 
-        override fun onMagCard(track1: String?, track2: String?, track3: String?) {
-            if (claim()) detected(TrackParser.fromTracks(System.currentTimeMillis(), track1, track2, track3), "MSR")
-        }
-
-        override fun onIcCard(atr: String?) {
+        override fun onCardDetected(type: Int) {
             if (!claim()) return
-            hw.cancelCheckCard() // before the launch, so the screen's checkCard can only come after it
-            detected(null, "IC")
+            if (type == CardTypes.IC) {
+                cancelWait() // before the launch, so the screen's wait can only come after it
+                detected(null, "IC")
+                return
+            }
+            val t = try {
+                reader.readMsr()
+            } catch (e: CardReaderException) {
+                Log.w(TAG, "MSR read failed: ${CardReaderError.name(e.code)}")
+                arm(RETRY_MS)
+                return
+            }
+            detected(TrackParser.fromTracks(System.currentTimeMillis(), t.track1, t.track2, t.track3), "MSR")
         }
 
         override fun onError(code: Int, message: String?) {
             if (!claim()) return
-            if (code == ERR_INVOKING_REPEAT) worker.execute { hw.cancelCheckCard() }
-            if (code != ERR_TIMEOUT) Log.w(TAG, "checkCard error $code")
-            arm(if (code == ERR_TIMEOUT) 0 else RETRY_MS)
+            if (code != CardReaderError.TIMEOUT) Log.w(TAG, "card wait error ${CardReaderError.name(code)}")
+            arm(if (code == CardReaderError.TIMEOUT) 0 else RETRY_MS)
+        }
+    }
+
+    // A failed cancel means the reader (or the reader service) is gone; there is no wait left to stop.
+    private fun cancelWait() {
+        try {
+            reader.cancel()
+        } catch (e: CardReaderException) {
+            Log.w(TAG, "cancel failed: ${CardReaderError.name(e.code)}")
         }
     }
 
@@ -192,8 +215,6 @@ class CardWatchService : Service(), PayHardware.ConnectionListener {
         private const val SLOT_POLL_MS = 500L
         private const val RETRY_MS = 3000L
         private const val HANDOVER_TIMEOUT_MS = 5000L
-        private const val ERR_TIMEOUT = -30005
-        private const val ERR_INVOKING_REPEAT = -20001
 
         @Volatile private var instance: CardWatchService? = null
         @Volatile private var pending: CardRead? = null
@@ -211,7 +232,7 @@ class CardWatchService : Service(), PayHardware.ConnectionListener {
             svc.main.post {
                 synchronized(svc.lock) {
                     svc.session.incrementAndGet()
-                    if (svc.armed.getAndSet(false)) svc.hw.cancelCheckCard()
+                    if (svc.armed.getAndSet(false)) svc.cancelWait()
                 }
                 svc.detected(read, if (read == null) "IC" else "MSR")
             }

@@ -142,7 +142,7 @@ open class ReaderActivity : Activity(), ReaderController.Listener {
             ReaderStatus.READING -> "IC 카드를 읽는 중이에요. 카드를 빼지 마세요"
             ReaderStatus.REMOVE_CARD -> "다 읽었어요. 카드를 빼 주세요"
             ReaderStatus.ERROR -> "리더 오류 (${detail ?: "-"}). 다시 시도하고 있어요"
-            ReaderStatus.SERVICE_MISSING -> "결제 하드웨어 서비스(com.sunmi.pay.hardware_v3)를 찾을 수 없어요"
+            ReaderStatus.SERVICE_MISSING -> "카드 리더를 찾을 수 없어요 (리더 서비스, 결제 하드웨어 서비스, 직접 연결 모두 없음)"
         }
     }
 
