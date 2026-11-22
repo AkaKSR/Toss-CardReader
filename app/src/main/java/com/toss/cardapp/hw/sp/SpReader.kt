@@ -1,6 +1,7 @@
 package com.toss.cardapp.hw.sp
 
 import android.os.SystemClock
+import android.util.Log
 import com.toss.cardapp.hw.CardEvents
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -10,6 +11,7 @@ import kotlin.concurrent.thread
  * wait for an IC insert or an MSR swipe, exchange APDUs with an inserted card, power it off, report its presence.
  */
 object SpReader {
+    private const val TAG = "SpReader"
     private const val SLOT = "SCC0"
     private const val POLL_GAP_MS = 50L
     private const val EXCHANGE_CONTROL = 32
@@ -26,6 +28,7 @@ object SpReader {
     @Synchronized fun connect() {
         if (users == 0) SpLink.open()
         users++
+        Log.i(TAG, "connect users=$users")
     }
 
     @Synchronized fun disconnect() {
@@ -34,10 +37,12 @@ object SpReader {
             session.incrementAndGet()
             SpLink.close()
         }
+        Log.i(TAG, "disconnect users=$users")
     }
 
     fun checkCard(icWanted: Boolean, msrWanted: Boolean, timeoutSec: Int, events: CardEvents) {
         val id = session.incrementAndGet()
+        Log.i(TAG, "wait start session=$id ic=$icWanted msr=$msrWanted")
         thread(name = "sp-check", isDaemon = true) {
             val deadline = SystemClock.uptimeMillis() + timeoutSec * 1000L
             try {
@@ -54,7 +59,7 @@ object SpReader {
     }
 
     fun cancelCheckCard() {
-        session.incrementAndGet()
+        Log.i(TAG, "wait cancel session=${session.incrementAndGet()}")
     }
 
     fun cardExistStatus(): Int = if (icPresent()) CARD_PRESENT else CARD_ABSENT

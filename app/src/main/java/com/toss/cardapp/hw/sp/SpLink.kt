@@ -1,6 +1,7 @@
 package com.toss.cardapp.hw.sp
 
 import android.os.SystemClock
+import android.util.Log
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
@@ -17,6 +18,7 @@ object SpLink {
     private const val BAUD = "921600"
     private const val PROBE_TIMEOUT_MS = 1000L
     private const val HEADER_TIMEOUT_MS = 300L
+    private const val TAG = "SpLink"
 
     private val lock = Any()
     private var fd: FileDescriptor? = null
@@ -24,7 +26,7 @@ object SpLink {
 
     fun available(): Boolean = java.io.File(DEVICE).canWrite()
 
-    fun open() = synchronized(lock) {
+    fun open(): Unit = synchronized(lock) {
         if (fd != null) return
         val f = Os.open(DEVICE, OsConstants.O_RDWR or OsConstants.O_NOCTTY or OsConstants.O_NONBLOCK, 0)
         try {
@@ -34,14 +36,15 @@ object SpLink {
             val ack = readExact(f, 1, PROBE_TIMEOUT_MS)
             if (ack[0] != SpProtocol.LINK_ACK) throw IOException("unexpected link reply")
             fd = f
+            Log.i(TAG, "open pid=${android.os.Process.myPid()} link ok")
         } catch (e: Exception) {
             Os.close(f)
             throw e
         }
     }
 
-    fun close() = synchronized(lock) {
-        fd?.let { runCatching { Os.close(it) } }
+    fun close(): Unit = synchronized(lock) {
+        fd?.let { runCatching { Os.close(it) }; Log.i(TAG, "close") }
         fd = null
     }
 
@@ -52,13 +55,25 @@ object SpLink {
         drain(f)
         var off = 0
         while (off < request.size) off += Os.write(f, request, off, request.size - off)
+        val started = SystemClock.uptimeMillis()
+        var raw: ByteArray? = null
         try {
-            SpProtocol.parseReply(request, readFrame(f, timeoutMs))
-        } catch (e: SpProtocolException) {
+            raw = readFrame(f, timeoutMs)
+            val reply = SpProtocol.parseReply(request, raw)
+            // Card data never reaches logcat: only the status reply (a bare result code) is logged in full.
+            val shown = if (command == SpCommand.IC_STATUS) " rx=${raw.hex()}" else ""
+            Log.d(TAG, "cmd=%02X seq=%02X result=%d args=%d %dms%s".format(command.id, request[1].toInt() and 0xFF,
+                reply.result, reply.data.size, SystemClock.uptimeMillis() - started, shown))
+            reply
+        } catch (e: Exception) {
+            val shown = if (command == SpCommand.IC_STATUS) " rx=${raw?.hex()}" else ""
+            Log.w(TAG, "cmd=%02X failed: %s %s%s".format(command.id, e.javaClass.simpleName, e.message, shown))
             close()
             throw e
         }
     }
+
+    private fun ByteArray.hex() = joinToString("") { "%02X".format(it.toInt() and 0xFF) }
 
     private fun configure() {
         val p = ProcessBuilder(

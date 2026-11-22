@@ -39,8 +39,10 @@ then closes the link.
 Request payload: an argument count byte, then each argument as a little-endian u16 length followed by its bytes.
 Text arguments carry a trailing zero byte (`SCC0\0` is 5 bytes). Integers are 4-byte little endian.
 
-Reply payload: a link status byte (`00` = delivered), an argument count byte, then arguments in the same
-length-prefixed form. The first argument is a 4-byte signed result. `-12001` means no card.
+Reply payload: a state byte, an argument count byte, then arguments in the same length-prefixed form. The first
+argument is a 4-byte signed result. `-12001` means no card. The state byte is `00` on the first reply after the
+processor (re)started and `01` afterwards; it is informational, not an error. On the device the same no-card reply
+was seen both ways: `... 08 00 00 01 04 00 1F D1 FF FF 05` and `... 08 00 01 01 04 00 1F D1 FF FF 04`.
 
 ## Commands the app sends (allowlist)
 

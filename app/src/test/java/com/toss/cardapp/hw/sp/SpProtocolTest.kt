@@ -36,6 +36,16 @@ class SpProtocolTest {
     }
 
     @Test
+    fun parsesBothNoCardStatusRepliesCapturedFromDevice() {
+        val first = SpProtocol.parseReply(status, "DE00120A0800000104001FD1FFFF05".hexToBytes())
+        val later = SpProtocol.parseReply(status, "DE00120A0800010104001FD1FFFF04".hexToBytes())
+        assertEquals(SpProtocol.NO_CARD, first.result)
+        assertEquals(SpProtocol.NO_CARD, later.result)
+        assertTrue(first.freshStart)
+        assertFalse(later.freshStart)
+    }
+
+    @Test
     fun rejectsReplyWithBadChecksum() {
         val bad = reply(status, okPayload())
         bad[bad.size - 1] = (bad.last() + 1).toByte()
@@ -58,11 +68,6 @@ class SpProtocolTest {
         assertThrows(SpProtocolException::class.java) { SpProtocol.parseReply(status, reply(status, overrun)) }
     }
 
-    @Test
-    fun nonZeroLinkStatusIsAnError() {
-        val p = okPayload().also { it[0] = 1 }
-        assertThrows(SpProtocolException::class.java) { SpProtocol.parseReply(status, reply(status, p)) }
-    }
 
     @Test
     fun allowlistAcceptsOnlyCardGroupCommands() {

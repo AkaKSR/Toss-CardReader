@@ -85,10 +85,9 @@ object SpProtocol {
             p += n
         }
         if (p != end) throw SpProtocolException("trailing bytes")
-        if (status != 0) throw SpProtocolException("link status $status")
         val result = args.firstOrNull()?.takeIf { it.size == 4 }?.let { readU32(it) }
             ?: throw SpProtocolException("missing result")
-        return SpReply(result, args.drop(1))
+        return SpReply(result, args.drop(1), freshStart = status == 0)
     }
 
     /** Short ISO 7816 command APDU to the processor's record: header, Lc u16 LE, data, Le u16 LE. */
@@ -136,6 +135,7 @@ enum class SpCommand(val id: Int) {
     }
 }
 
-data class SpReply(val result: Int, val data: List<ByteArray>)
+/** [freshStart]: the processor flags its first reply after it (re)started; informational, not an error. */
+data class SpReply(val result: Int, val data: List<ByteArray>, val freshStart: Boolean = false)
 
 class SpProtocolException(message: String) : Exception(message)
