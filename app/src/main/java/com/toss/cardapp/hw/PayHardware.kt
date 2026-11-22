@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.Parcel
 import android.os.RemoteException
+import com.toss.cardapp.hw.sp.SpLink
+import com.toss.cardapp.hw.sp.SpReader
 
 interface CardEvents {
     fun onMagCard(track1: String?, track2: String?, track3: String?)
@@ -30,14 +32,22 @@ class PayHardware(private val context: Context) : ServiceConnection {
 
     var listener: ConnectionListener? = null
     @Volatile private var readCard: IBinder? = null
+    @Volatile private var direct = false
     private var bound = false
 
-    val connected: Boolean get() = readCard != null
+    val connected: Boolean get() = direct || readCard != null
 
+    // Stock service first; without it, talk to the reader directly over its UART (hw/sp).
     fun bind(): Boolean {
-        if (bound) return true
+        if (bound || direct) return true
         bound = context.bindService(Intent(SVC_ACTION).setPackage(SVC_PKG), this, Context.BIND_AUTO_CREATE)
-        return bound
+        if (bound) return true
+        if (!SpLink.available()) return false
+        Thread {
+            direct = try { SpReader.connect(); true } catch (e: Exception) { false }
+            if (direct) listener?.onConnected() else listener?.onDisconnected()
+        }.start()
+        return true
     }
 
     fun unbind() {
@@ -45,6 +55,8 @@ class PayHardware(private val context: Context) : ServiceConnection {
         if (bound) context.unbindService(this)
         bound = false
         readCard = null
+        if (direct) SpReader.disconnect()
+        direct = false
     }
 
     override fun onServiceConnected(name: ComponentName, service: IBinder) {
@@ -62,6 +74,7 @@ class PayHardware(private val context: Context) : ServiceConnection {
     }
 
     fun checkCard(cardTypes: Int, timeoutSec: Int, events: CardEvents) {
+        if (direct) return SpReader.checkCard(cardTypes and CARD_IC != 0, cardTypes and CARD_MAGNETIC != 0, timeoutSec, events)
         val rc = readCard ?: throw RemoteException("service not connected")
         call(rc, READ_CARD, TX_CHECK_CARD, {
             it.writeInt(cardTypes)
@@ -71,11 +84,13 @@ class PayHardware(private val context: Context) : ServiceConnection {
     }
 
     fun cancelCheckCard() {
+        if (direct) return SpReader.cancelCheckCard()
         val rc = readCard ?: return
         try { call(rc, READ_CARD, TX_CANCEL_CHECK_CARD, {}) {} } catch (_: RemoteException) {}
     }
 
     fun transmitApdu(cardType: Int, apdu: ByteArray): ByteArray {
+        if (direct) return SpReader.transmitApdu(apdu)
         val rc = readCard ?: throw RemoteException("service not connected")
         return call(rc, READ_CARD, TX_TRANSMIT_APDU, {
             it.writeInt(cardType)
@@ -90,11 +105,13 @@ class PayHardware(private val context: Context) : ServiceConnection {
     }
 
     fun cardOff(cardType: Int): Int {
+        if (direct) return try { SpReader.cardOff() } catch (_: Exception) { -1 }
         val rc = readCard ?: return -1
         return try { call(rc, READ_CARD, TX_CARD_OFF, { it.writeInt(cardType) }) { it.readInt() } } catch (_: RemoteException) { -1 }
     }
 
     fun cardExistStatus(cardType: Int): Int {
+        if (direct) return try { SpReader.cardExistStatus() } catch (_: Exception) { -1 }
         val rc = readCard ?: return -1
         return try { call(rc, READ_CARD, TX_CARD_EXIST_STATUS, { it.writeInt(cardType) }) { it.readInt() } } catch (_: RemoteException) { -1 }
     }
