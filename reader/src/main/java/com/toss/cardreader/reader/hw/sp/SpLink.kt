@@ -23,7 +23,7 @@ object SpLink {
 
     private val lock = Any()
     private var fd: FileDescriptor? = null
-    private var seq = 0
+    private val seq = SpSequence()
 
     fun available(): Boolean = java.io.File(DEVICE).canWrite()
 
@@ -41,6 +41,7 @@ object SpLink {
             Os.write(f, byteArrayOf(SpProtocol.LINK_PROBE), 0, 1)
             val ack = readExact(f, 1, PROBE_TIMEOUT_MS)
             if (ack[0] != SpProtocol.LINK_ACK) throw IOException("unexpected link reply")
+            seq.restart()
             fd = f
             Log.i(TAG, "open pid=${android.os.Process.myPid()} link ok")
         } catch (e: Exception) {
@@ -56,8 +57,7 @@ object SpLink {
 
     fun call(command: SpCommand, args: List<ByteArray>, timeoutMs: Long): SpReply = synchronized(lock) {
         val f = fd ?: throw IOException("link closed")
-        val request = SpProtocol.frame(seq, command, args)
-        seq = (seq + 1) and 0xFF
+        val request = SpProtocol.frame(seq.take(), command, args)
         drain(f)
         var off = 0
         while (off < request.size) off += Os.write(f, request, off, request.size - off)

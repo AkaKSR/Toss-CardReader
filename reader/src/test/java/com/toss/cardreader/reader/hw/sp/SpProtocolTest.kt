@@ -24,6 +24,16 @@ class SpProtocolTest {
         byteArrayOf(0) + SpProtocol.encodeArgs(listOf(SpProtocol.u32(0)) + extra)
 
     @Test
+    fun reopenedLinkNumbersFramesFromZeroAgain() {
+        val seq = SpSequence()
+        repeat(0x1B) { seq.take() } // first link: frames 00..1A, then the port closes
+        seq.restart() // the next open
+        val first = SpProtocol.frame(seq.take(), SpCommand.IC_STATUS, listOf(SpProtocol.text("SCC0")))
+        assertEquals("DE00120A08000105005343433000A9", first.toHex())
+        assertEquals(1, seq.take())
+    }
+
+    @Test
     fun statusFrameMatchesReviewedWireBytes() {
         assertEquals("DE00120A080001050053434330 00A9".replace(" ", ""), status.toHex())
     }

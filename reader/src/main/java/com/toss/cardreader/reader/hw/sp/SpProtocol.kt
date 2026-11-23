@@ -135,6 +135,20 @@ enum class SpCommand(val id: Int) {
     }
 }
 
+/**
+ * Sequence numbers of one link. The processor numbers frames from 00 after each link probe and refuses any other
+ * number (reply group 00 cmd 00, code 6, echoing the refused sequence), so [restart] runs on every successful open.
+ */
+class SpSequence {
+    private var next = 0
+
+    fun restart() {
+        next = 0
+    }
+
+    fun take(): Int = next.also { next = (it + 1) and 0xFF }
+}
+
 /** [freshStart]: the processor flags its first reply after it (re)started; informational, not an error. */
 data class SpReply(val result: Int, val data: List<ByteArray>, val freshStart: Boolean = false)
 
