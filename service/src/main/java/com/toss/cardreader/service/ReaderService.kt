@@ -50,8 +50,13 @@ class ReaderService : Service(), PayHardware.ConnectionListener {
         sessions.readerLost()
         hw.unbind()
         Log.i(TAG, "no clients: reader closed")
-        return false
+        // true asks Android for onRebind, which re-arms onUnbind for the next time the last client leaves.
+        // With false, onUnbind runs only once per process and the reader stays open afterwards.
+        return true
     }
+
+    // A client came back after the last one left; the reader opens again on its first call (ensureReader).
+    override fun onRebind(intent: Intent) {}
 
     override fun onDestroy() {
         sessions.readerLost()
