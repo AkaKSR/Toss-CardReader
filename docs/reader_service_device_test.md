@@ -1,6 +1,12 @@
 # 카드 리더 서비스 실기기 시험 절차
 
-대상 기기: 토스프론트 실기기. 시험 전에는 기기에 아무것도 설치하지 않았습니다.
+대상 기기: 토스프론트 실기기 (2026-11-23 시험은 무선 adb 연결). 시험 전에는 기기에 아무것도 설치하지 않았습니다.
+
+2026-11-23 0단계에서 확인한 기기 상태(문서 처음 가정과 다름):
+- 빌드 `LineageOS for Toss Front | 20260928.001 | UNOFFICIAL`.
+- Sunmi 결제 서비스 `com.sunmi.pay.hardware_v3`는 설치돼 있지 않습니다(`pm path` 출력 없음, exit 1).
+- 설치된 카드 리더 앱은 1.2.0이 아니라 **1.1.0**입니다. 이 앱이 `/dev/ttyS3`를 열어 두고 약 50ms마다 `IC_STATUS`(cmd 0A)와 `MSR_READ`(cmd 01)를 계속 보냅니다.
+  그래서 우리 서비스가 포트를 열기 전에 카드 리더 앱을 먼저 멈춰야 합니다(`am force-stop com.toss.cardapp`).
 각 단계의 **사장님** 항목은 기기 앞에서 해 주셔야 하는 일입니다. 나머지는 Mac에서 adb로 진행합니다.
 
 ## 설치 파일 (dist/)
@@ -23,7 +29,7 @@
 - adb: `adb devices`, Android 버전, Sunmi 결제 서비스 설치 여부(`pm path com.sunmi.pay.hardware_v3`), 카드 리더 앱 버전을 기록합니다.
 - 루트 권한은 쓰지 않습니다. 포트를 누가 열었는지는 루트 없이 확인합니다(아래 "포트 점유 확인").
 
-### 1. 서비스와 시험 앱 설치 (카드 리더 앱은 아직 1.2.0)
+### 1. 서비스와 시험 앱 설치 (카드 리더 앱은 아직 기존 버전, 2026-11-23 기기는 1.1.0)
 - adb: 서비스, trusted, second, foreign 시험 앱을 설치하고 서비스를 시작합니다.
 - 확인: 1.2.0 앱의 자동 실행 대기가 `/dev/ttyS3`를 쓰는 중이면 시험 앱의 카드 대기가 `BUSY`로 거절됩니다.
   서비스는 포트를 건드리지 않습니다. 직접 연결끼리 충돌하지 않는지 보는 단계입니다.
@@ -61,8 +67,10 @@
 
 ## 포트 점유 확인 (루트 없음)
 
-- `SpLink` 로그: 포트를 열 때 `open pid=<pid> link ok`, 닫을 때 `close`를 남깁니다. `adb logcat -v pid -s SpLink ReaderService ReaderSessions`로
-  어느 pid가 열고 닫았는지 봅니다.
+- `SpLink` 로그: 포트를 열 때 `open pid=<pid> link ok`, 닫을 때 `close`를 남깁니다. `adb logcat -d -v threadtime -s SpLink:* ReaderService:* ReaderSessions:*`로
+  어느 pid가 열고 닫았는지 봅니다(threadtime 형식의 셋째 칸이 pid). 이 기기의 logcat은 `-v pid`를 지원하지 않습니다.
+- 기준 시각은 `adb shell 'date +"%m-%d %H:%M:%S.000"'`처럼 기기 쪽 명령 전체를 작은따옴표로 감싸야 합니다. 감싸지 않으면 기기 셸이 공백에서 잘라 날짜만 나옵니다.
+- 로그 버퍼는 돌아가며 지워집니다. 버퍼에 `open` 줄이 없다는 것만으로 "포트를 열지 않았다"고 판정하지 않습니다. 해당 pid의 생애 전체가 버퍼 안에 있을 때만 판정하고, 아니면 "판정 불가"로 적습니다.
 - `adb shell pidof com.toss.cardreader.service com.toss.cardapp`로 위 pid가 어느 앱인지 맞춰 봅니다.
   카드 리더 앱 1.3.0의 pid로 `open`이 찍히면 실패입니다.
 - 서비스가 포트를 쓰지 않은 경우 `ReaderSessions`가 BUSY를 남기고, 시험 앱 화면에 `BUSY`가 나옵니다.
