@@ -62,18 +62,18 @@
 ### 전제 조건
 
 1. PC에서 `adb`를 사용할 수 있고, 대상 기기의 USB 디버깅이 허용되어 있어야 합니다.
-2. GitHub Releases에서 `toss-front-card-app-1.2.0.apk`를 다운로드합니다.
+2. GitHub Releases에서 `toss-front-card-app-1.3.0.apk`를 다운로드합니다. 카드 리더 서비스를 함께 쓰려면 [Toss-CardReader-Service](https://github.com/AkaKSR/Toss-CardReader-Service/releases) Releases의 서비스 APK도 설치합니다(선택).
 
 Magisk 모듈과 결제 하드웨어 서비스는 필요하지 않습니다. 기존에 `sunmi_payhw` 모듈과 서비스(검증 버전 `3.3.357`)를 설치했다면 그대로 두어도 되며, 이 경우 앱은 서비스를 사용합니다.
 
-서비스 APK나 라이브러리는 이 저장소에 포함하지 않습니다. 서비스를 다른 버전으로 임의 교체하면 SP 펌웨어가 자동 업데이트될 수 있으므로 기존 하드웨어 구성을 유지하세요.
+Sunmi 결제 하드웨어 서비스의 APK나 라이브러리는 이 저장소에 포함하지 않습니다. 서비스를 다른 버전으로 임의 교체하면 SP 펌웨어가 자동 업데이트될 수 있으므로 기존 하드웨어 구성을 유지하세요.
 
 ### APK 설치와 권한
 
 아래 명령은 `adb`에 대상 기기 한 대가 연결된 상태를 기준으로 합니다.
 
 ```sh
-adb install -r toss-front-card-app-1.2.0.apk
+adb install -r toss-front-card-app-1.3.0.apk
 adb shell appops set com.toss.cardapp SYSTEM_ALERT_WINDOW allow
 adb shell pm grant com.toss.cardapp android.permission.POST_NOTIFICATIONS
 adb shell dumpsys deviceidle whitelist +com.toss.cardapp
@@ -84,7 +84,18 @@ adb shell am start -n com.toss.cardapp/.ui.ReaderActivity
 - **알림**: 카드 감지 대기 서비스의 상태를 표시합니다.
 - **배터리 최적화 예외**: 대기 서비스의 실행을 돕습니다.
 
-1.0.0·1.1.0과 같은 서명 키로 만든 APK이므로 기존 앱 위에 업데이트할 수 있습니다. 기록·회원·규칙은 유지됩니다.
+1.0.0~1.2.0과 같은 서명 키로 만든 APK이므로 기존 앱 위에 업데이트할 수 있습니다. 기록·회원·규칙은 유지됩니다.
+
+## 버전 기록
+
+| 버전 | 날짜 | 변경 요약 |
+| --- | --- | --- |
+| 1.3.0 (versionCode 4) | 2026-11-23 | 별도 카드 리더 서비스 앱(`com.toss.cardreader.service`)을 먼저 쓰고, 없으면 Sunmi 결제 서비스, 그다음 직접 연결 순으로 리더를 고릅니다. 공용 드라이버를 `reader` 모듈로, 연결 라이브러리를 `client` 모듈로 분리했습니다. |
+| 1.2.0 | 2026-11-22 | Magisk 모듈 없이 `/dev/ttyS3` 직접 연결, 이미 읽은 IC 카드는 제거 안내 |
+| 1.1.0 | 2026-11-22 | 공개 첫 버전, 삼성페이 실기기 확인 |
+
+- 1.3.0 APK는 커밋 `c3f53e4`(태그 `v1.3.0`)에서 빌드한 파일입니다. 그 뒤 `main`에 들어간 리더 수정(링크를 다시 열 때 프레임 번호를 00부터 시작, 마지막 클라이언트가 나갈 때마다 리더 닫기)은 카드 리더 서비스 1.0.2에 들어 있고, 앱의 직접 연결 경로에는 다음 앱 버전부터 반영됩니다.
+- 카드 리더 서비스 소스와 릴리스는 [AkaKSR/Toss-CardReader-Service](https://github.com/AkaKSR/Toss-CardReader-Service)에서 따로 배포합니다. 이 저장소의 `service` 모듈과 같은 코드입니다.
 
 ## 사용법
 
